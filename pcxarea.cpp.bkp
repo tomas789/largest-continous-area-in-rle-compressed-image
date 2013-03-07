@@ -1,0 +1,436 @@
+//
+//  main.cpp
+//  PCXArea
+//
+//  Created by Tomáš Krejčí on 9/25/12.
+//  Copyright (c) 2012 Tomáš Krejčí. All rights reserved.
+//
+
+/*
+ * PCX File Format Resources
+ *
+ * http://www.fileformat.info/format/pcx/egff.htm
+ * http://www.shikadi.net/moddingwiki/PCX_Format
+ */
+
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <sys/time.h>
+
+#define IS_DEBUG 1
+
+struct PCX_Header;
+int inline imgWidth(PCX_Header &header);
+int inline imgHeight(PCX_Header &header);
+uint8_t getByte(PCX_Header &header, std::ifstream &inFile);
+int isPowerOfTwo(unsigned int x);
+
+struct PCX_Header
+{
+    /* Always 0xA0 */
+    uint8_t manufacturer;
+    
+    /*
+     * PCX Paintbrush version
+     * 0 = 2.5
+     * 2 = 2.8 w/ palette
+     * 3 = 2.8 w/out palette
+     * 5 = 3.0 or better
+     */
+    uint8_t version;
+    
+    /*
+     * Should be 0x01
+     * 0 = uncompressed image (allowed, but not much software supports it)
+     * 1 = .PCX run length encoding
+     */
+    uint8_t encoding;
+    
+    /* Number of bits per pixel in each colour plane (1, 2, 4, 8, 24) */
+    uint8_t bitsPerPlane;
+    
+    /*
+     * Window (image dimensions):
+     * Image width = XMax-XMin
+     * Image height = YMax-YMin
+     * Normally Xmin and Ymin should be set to zero.
+     */
+    uint16_t Xmin;
+    
+    uint16_t Ymin;
+    
+    uint16_t Xmax;
+    
+    uint16_t Ymax;
+    
+    /* Vertical resolution, in DPI (dots per inch). Can also be image width. */
+    uint16_t VertDPI;
+    
+    /* Horizontal resolution, in DPI (dots per inch). Can also be image height. May be absent. */
+    uint16_t HorzDPI;
+    
+    /* For 16 colors or less, entries of RGB for the palette, similar to bitmap palette,
+     but each entry 3 bytes long only. Padded with 0x00 to 48 bytes in total length. */
+    uint8_t palette[48];
+    
+    /* Should be set to 0 */
+    uint8_t reserved;
+    
+    /* Number of colour planes, e.g. 4 = 16 colors (if bitsPerPlane is 1), 3 = 24-bit true color (if bitsPerPlane is 8) */
+    uint8_t colorPlanes;
+    
+    /* Number of bytes to read for a single plane's scanline, i.e. at least image_width ÷ 8 bits per byte × bitsPerPlane. MUST be an EVEN number.
+     Do NOT calculate from Xmax-Xmin. Normally a multiple of the machine's native word length (2 or 4) */
+    uint16_t bytesPerPlaneLine;
+    
+    /*
+     * How to interpret palette:
+     * 1 = Color/BW
+     * 2 = Grayscale (ignored in PC Paintbrush IV/ IV +)
+     */
+    uint16_t paltype;
+    
+    /* Only supported by PC Paintbrush IV or higher; deal with scrolling. */
+    uint16_t hScrSize;
+    
+    /* Only supported by PC Paintbrush IV or higher; deal with scrolling. */
+    uint16_t vScrSize;
+};
+
+class CVrchol {
+public:
+    CVrchol(int aZacatek, int aDelka, int aBarva);
+    int zacatek();
+    int konec();
+    int delka();
+    int barva();
+    int zacatekX(PCX_Header &header);
+    int konecX(PCX_Header &header);
+    bool jeSoused(CVrchol &v, PCX_Header &header);
+    void pridejHranu(CVrchol &v);
+    bool bylProhledan();
+    void setBylProhledan(bool);
+    int zjistiHloubku();
+private:
+    int pPozice;
+    int pDelka;
+    int pBarva;
+    bool pBylProhledan;
+    std::vector<CVrchol *> e;
+};
+
+CVrchol::CVrchol(int aZacatek, int aDelka, int aBarva)
+{
+    pPozice = aZacatek;
+    pDelka = aDelka;
+    pBarva = aBarva;
+    pBylProhledan = false;
+    e =  *new std::vector<CVrchol *>();
+}
+
+int CVrchol::zacatek()
+{
+    return pPozice;
+}
+
+int CVrchol::konec()
+{
+    return pPozice + pDelka;
+}
+
+int CVrchol::delka()
+{
+    return pDelka;
+}
+
+int CVrchol::barva()
+{
+    return pBarva;
+}
+
+int CVrchol::zacatekX(PCX_Header &header)
+{
+    return pPozice % (header.Xmax - header.Xmin + 1);
+}
+
+int CVrchol::konecX(PCX_Header &header)
+{
+    return (pPozice + pDelka - 1) % (header.Xmax - header.Xmin + 1);
+}
+
+bool CVrchol::jeSoused(CVrchol &v, PCX_Header &header)
+{
+    int width = header.Xmax - header.Xmin + 1;
+    if (v.zacatek() / width == zacatek() / width) return false; // pro pripad, ze jsou na stejnem radku
+    return std::min(v.konecX(header), konecX(header)) - std::max(v.zacatekX(header), zacatekX(header)) >= 0;
+}
+
+void CVrchol::pridejHranu(CVrchol &v)
+{
+    e.push_back(&v);
+}
+
+bool CVrchol::bylProhledan()
+{
+    return pBylProhledan;
+}
+
+void CVrchol::setBylProhledan(bool aBylProhledan)
+{
+    pBylProhledan = aBylProhledan;
+}
+
+int inline imgWidth(PCX_Header &header) {
+    return header.Xmax - header.Xmin + 1;
+}
+
+int inline imgHeight(PCX_Header &header) {
+    return header.Ymax - header.Ymin + 1;
+}
+
+int CVrchol::zjistiHloubku()
+{
+    if (bylProhledan()) return 0;
+    else setBylProhledan(true);
+    
+    int tmp = delka();
+    
+    std::vector<CVrchol *>::iterator it;
+    for (it = e.begin(); it < e.end(); it++) {
+        tmp += (*it)->zjistiHloubku();
+    }
+    
+    return tmp;
+}
+
+uint8_t getByte(PCX_Header &header, std::ifstream &inFile)
+{
+    uint8_t byte;
+    inFile.read((char *) &byte, sizeof(byte));
+    return byte;
+}
+
+int isPowerOfTwo (unsigned int x)
+{
+    return ((x != 0) && ((x & (~x + 1)) == x));
+}
+
+int main(int argc, const char * argv[])
+{
+    
+    if (argc != 2) {
+        std::cout << "Invalid usage. Exit!";
+        return 0;
+    }
+    
+    timeval time;
+    gettimeofday(&time, NULL);
+    long microsecStart = ((unsigned long long)time.tv_sec * 1000000) + time.tv_usec;
+    
+    std::ifstream inFile;
+
+    // Open the specified file
+    inFile.open(argv[1], std::ios::binary);
+    
+    if(! inFile.is_open()) {
+        std::cout << "Failed to open file" << std::endl;
+        return 1;
+    }
+    
+    /* Load PCX Header */
+    struct PCX_Header header;
+    inFile.read((char *) &header, sizeof(struct PCX_Header));
+    
+    /* Manufacturer check */
+    std::cout << "Check Manufacturer:         ";
+    if (header.manufacturer != 0x0A) {
+        std::cout << "failed" << std::endl;
+        return 1;
+    } else std::cout << "OK" << std::endl;
+    
+    /* Encoding check */
+    std::cout << "Check Encoding:             ";
+    if (header.encoding != 1) {
+        std::cout << "failed" << std::endl;
+        return 1;
+    } else std::cout << "OK" << std::endl;
+    
+    /* Width check */
+    std::cout << "Check Bits per Plane:       ";
+    if (8 != header.bitsPerPlane) {
+        std::cout << "failed" << std::endl;
+        return 1;
+    } else std::cout << "OK" << std::endl;
+    
+    /* Width check */
+    std::cout << "Check Width:                ";
+    if ((header.Xmax - header.Xmin) < 1) {
+        std::cout << "failed" << std::endl;
+        return 1;
+    } else std::cout << "OK" << std::endl;
+    
+    // /* Height check */
+    // std::cout << "Check Height:               ";
+    // if ((header.Ymax - header.Ymin) < 1) {
+    //     std::cout << "failed" << std::endl;
+    //     return 1;
+    // } else std::cout << "OK" << std::endl;
+    
+    /* Color planes check */
+    std::cout << "Check Color Planes:         ";
+    if (1 != header.colorPlanes) {
+        std::cout << "failed" << std::endl;
+        return 1;
+    } else std::cout << "OK" << std::endl;
+    
+    /* Palette type check */
+    std::cout << "Check Palette Type:         ";
+    if (2 != header.paltype) {
+        std::cout << "failed" << std::endl;
+        return 1;
+    } else std::cout << "OK" << std::endl;
+    
+    /* Palette type check */
+    std::cout << "Check Width Acceptable:     ";
+    if (!(isPowerOfTwo(imgWidth(header)) || imgWidth(header) < 8)) {
+        std::cout << "failed" << std::endl;
+        return 1;
+    } else std::cout << "OK" << std::endl;
+    
+    /* Debugging info */
+    std::cout << "PCX Paintbrush Version: ";
+    switch ((int) header.version) {
+        case 0:
+            std::cout << "2.5" << std::endl;
+            break;
+            
+        case 2:
+            std::cout << "2.8 w/ palette" << std::endl;
+            break;
+            
+        case 3:
+            std::cout << "2.8 w/out palette" << std::endl;
+            break;
+            
+        case 5:
+            std::cout << "3.0 or better" << std::endl;
+            break;
+            
+        default:
+            std::cout << "failed" << std::endl;
+            return 0;
+            break;
+    }
+    
+    std::cout << "Bytes Per Plane Line: " << (int) header.bytesPerPlaneLine << std::endl;
+
+    
+    /* START READING DATA */
+    unsigned int numPixels = imgWidth(header) * imgHeight(header); // celkem pixelu
+    unsigned int readPixels = 0;  // ja uz jsem nacetl pixelu
+    
+    inFile.seekg(0x80, std::ios_base::beg); // Skoc na zacatek dat
+    uint8_t byte = 0;         // pro aktualne nacitany byte
+    uint8_t runCount = 0;     // delka aktualniho behu
+    uint8_t runValue = 0;     // barva aktualniho behu
+    
+    std::vector<CVrchol *> vrcholy;
+    int ukPredchozi = 0; // ukazuje do predchoziho radku kde jsem skoncil
+    CVrchol *v;
+    
+    do {
+        byte = getByte(header, inFile);
+        
+        if ((byte & 0xC0) == 0xC0)  {
+            /* 2-byte code */
+            runCount = byte & 0x3F;
+            inFile.read((char *) &runValue, sizeof(runValue));
+        } else {
+            /* 1-byte code */
+            runCount = 1;
+            runValue = byte;
+        }
+        
+        v = new CVrchol(readPixels, runCount, runValue);
+        vrcholy.push_back(v);
+        
+        if (vrcholy.size() > 1)
+        {
+            CVrchol *predposledni = vrcholy.at(vrcholy.size() - 2);
+            CVrchol *posledni = vrcholy.at(vrcholy.size() - 1);
+            if (predposledni->barva() == posledni->barva())
+            {
+                // jsou to dva po sobe jdouci behy se stejnou barvou
+                predposledni->pridejHranu(*posledni);
+                posledni->pridejHranu(*predposledni);
+            }
+        }
+        
+        readPixels += runCount;
+    } while (v->konecX(header) != imgWidth(header)-1);
+    
+    // opakuj cyklus dokud neprectes vsechny pixely v obrazku
+    do {
+        byte = getByte(header, inFile);
+                
+        if ((byte & 0xC0) == 0xC0)  {
+            /* 2-byte code */
+            runCount = byte & 0x3F;
+            inFile.read((char *) &runValue, sizeof(runValue));
+        } else {
+            /* 1-byte code */
+            runCount = 1;
+            runValue = byte;
+        }
+        
+        // readPixels je zacatek aktualniho behu
+        
+        CVrchol *v = new CVrchol(readPixels, runCount, runValue);
+        vrcholy.push_back(v);
+        
+        while (v->jeSoused(*vrcholy.at(ukPredchozi), header)) {
+            if (v->barva() == vrcholy.at(ukPredchozi)->barva()) {
+                v->pridejHranu(*vrcholy.at(ukPredchozi));
+                vrcholy.at(ukPredchozi)->pridejHranu(*v);
+            }
+            
+            if (vrcholy.at(ukPredchozi)->konecX(header) - v->konecX(header) > 0) break;
+            else ukPredchozi++;
+        }
+        
+        CVrchol *predposledni = vrcholy.at(vrcholy.size() - 2);
+        CVrchol *posledni = vrcholy.at(vrcholy.size() - 1);
+        
+        if ((predposledni->zacatek() / imgWidth(header) == posledni->zacatek() / imgWidth(header)) &&
+            (predposledni->barva() == posledni->barva()))
+        {
+            // Jsou na stejnem radku se stejnou barvou
+            predposledni->pridejHranu(*posledni);
+            posledni->pridejHranu(*predposledni);
+        }
+        
+        
+        
+        readPixels += runCount;
+        
+    } while (readPixels < numPixels);
+    
+    int max = 0;
+    std::vector<CVrchol *>::iterator it;
+    for (it = vrcholy.begin(); it < vrcholy.end(); it++) {
+        max = std::max(max, (*it)->zjistiHloubku());
+    }
+    
+    std::cout << "Nejvetsi plocha je: " << max << std::endl;
+    
+    gettimeofday(&time, NULL);
+    long microsecEnd = ((unsigned long long)time.tv_sec * 1000000) + time.tv_usec;
+    
+    if (IS_DEBUG) std::cout << (microsecEnd - microsecStart) / 1000000.0 << " s" <<std::endl;
+    
+    std::cout << std::endl << " --- END --- " << std::endl;
+    
+    return 0;
+}
+
