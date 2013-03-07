@@ -1,3 +1,5 @@
+ADS II - Largest continous area in RLE compressed image
+
 PCXArea.pdf        Dokumentace
 PCXArea.tex        Dokumentace
 pcxarea.cpp.bkp    Delší a více komentovaná verze 
